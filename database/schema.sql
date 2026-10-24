@@ -1,239 +1,313 @@
+-- ============================================================
+-- FarmaExpress — Modelo relacional (PostgreSQL)
+-- Alineado con el MER del documento del proyecto (v4: inventario por lote).
+-- Normalizado en 3FN (RNF-13): todos los estados y tipos viven en
+-- tablas catálogo, no como texto libre.
+--
+-- Ejecutar sobre una base vacía:
+--   psql -U postgres -d farmaexpress -f database/schema.sql
+-- (o `npm run db:setup`, que además carga los datos de prueba).
+-- ============================================================
+
 SET client_encoding = 'UTF8';
 
--- ============================================================
--- Catálogo y sucursales
--- ============================================================
+DROP SCHEMA IF EXISTS public CASCADE;
+CREATE SCHEMA public;
 
-CREATE TABLE IF NOT EXISTS categories (
+-- ------------------------------------------------------------
+-- Catálogos
+-- ------------------------------------------------------------
+
+CREATE TABLE categorias (
   id SERIAL PRIMARY KEY,
-  name VARCHAR(100) NOT NULL,
-  description TEXT,
-  created_at TIMESTAMP DEFAULT NOW()
+  nombre VARCHAR(100) NOT NULL UNIQUE,
+  descripcion TEXT,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS branches (
+CREATE TABLE marcas (
   id SERIAL PRIMARY KEY,
-  name VARCHAR(120) NOT NULL,
-  address TEXT,
-  is_main BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT NOW()
+  nombre VARCHAR(100) NOT NULL UNIQUE
 );
 
-CREATE TABLE IF NOT EXISTS products (
+CREATE TABLE sucursales (
   id SERIAL PRIMARY KEY,
-  name VARCHAR(150) NOT NULL,
-  sku VARCHAR(100) UNIQUE,
-  category_id INT REFERENCES categories(id),
-  price NUMERIC(12,2) NOT NULL DEFAULT 0,
-  cost NUMERIC(12,2) NOT NULL DEFAULT 0,
-  brand VARCHAR(100),
-  expiration_date DATE,
-  is_active BOOLEAN DEFAULT TRUE,
-  requires_prescription BOOLEAN NOT NULL DEFAULT FALSE,
-  controlled_substance BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT NOW()
+  nombre VARCHAR(120) NOT NULL UNIQUE,
+  direccion TEXT,
+  es_principal BOOLEAN NOT NULL DEFAULT FALSE,
+  activa BOOLEAN NOT NULL DEFAULT TRUE,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- El stock ya no vive en products: cada producto tiene un renglón de stock
--- por sucursal (requisito "control de inventario por sucursal").
-CREATE TABLE IF NOT EXISTS product_stock (
-  product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-  branch_id INT NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
-  stock INT NOT NULL DEFAULT 0,
-  PRIMARY KEY (product_id, branch_id)
+CREATE TABLE roles (
+  id SERIAL PRIMARY KEY,
+  nombre_rol VARCHAR(30) NOT NULL UNIQUE
 );
 
--- ============================================================
--- Compras y proveedores
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS suppliers (
+CREATE TABLE tipos_contrato (
   id SERIAL PRIMARY KEY,
-  name VARCHAR(150) NOT NULL,
-  contact_name VARCHAR(120),
-  phone VARCHAR(50),
-  email VARCHAR(120),
-  address TEXT,
-  created_at TIMESTAMP DEFAULT NOW()
+  nombre_tipo VARCHAR(40) NOT NULL UNIQUE
 );
 
-CREATE TABLE IF NOT EXISTS purchases (
+CREATE TABLE aseguradoras (
   id SERIAL PRIMARY KEY,
-  supplier_id INT REFERENCES suppliers(id),
-  branch_id INT REFERENCES branches(id),
-  invoice_number VARCHAR(80),
-  total NUMERIC(12,2) NOT NULL DEFAULT 0,
-  purchase_date TIMESTAMP DEFAULT NOW(),
-  created_at TIMESTAMP DEFAULT NOW()
+  nombre VARCHAR(150) NOT NULL UNIQUE
 );
 
-CREATE TABLE IF NOT EXISTS purchase_items (
+CREATE TABLE estados_venta (
   id SERIAL PRIMARY KEY,
-  purchase_id INT REFERENCES purchases(id) ON DELETE CASCADE,
-  product_id INT REFERENCES products(id),
-  quantity INT NOT NULL,
-  unit_cost NUMERIC(12,2) NOT NULL,
+  nombre_estado VARCHAR(30) NOT NULL UNIQUE
+);
+
+CREATE TABLE estados_pago (
+  id SERIAL PRIMARY KEY,
+  nombre_estado VARCHAR(30) NOT NULL UNIQUE
+);
+
+CREATE TABLE metodos_pago (
+  id SERIAL PRIMARY KEY,
+  nombre VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE estados_despacho (
+  id SERIAL PRIMARY KEY,
+  nombre_estado VARCHAR(30) NOT NULL UNIQUE
+);
+
+CREATE TABLE tipos_movimiento (
+  id SERIAL PRIMARY KEY,
+  nombre_tipo VARCHAR(20) NOT NULL UNIQUE
+);
+
+CREATE TABLE estados_traslado (
+  id SERIAL PRIMARY KEY,
+  nombre_estado VARCHAR(30) NOT NULL UNIQUE
+);
+
+-- ------------------------------------------------------------
+-- Entidades principales
+-- ------------------------------------------------------------
+
+CREATE TABLE proveedores (
+  id SERIAL PRIMARY KEY,
+  nombre VARCHAR(150) NOT NULL,
+  nombre_contacto VARCHAR(120),
+  telefono VARCHAR(50),
+  correo VARCHAR(120),
+  direccion TEXT,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE productos (
+  id SERIAL PRIMARY KEY,
+  nombre_generico VARCHAR(150) NOT NULL,
+  presentacion VARCHAR(50),
+  sku VARCHAR(100) NOT NULL UNIQUE,
+  id_categoria INT REFERENCES categorias(id),
+  id_marca INT REFERENCES marcas(id),
+  precio NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (precio >= 0),
+  costo NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (costo >= 0),
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  requiere_receta BOOLEAN NOT NULL DEFAULT FALSE,
+  control_especial BOOLEAN NOT NULL DEFAULT FALSE,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- El vencimiento vive en el lote, no en el producto: un mismo
+-- medicamento puede tener varios lotes con fechas distintas.
+CREATE TABLE lotes (
+  id SERIAL PRIMARY KEY,
+  id_producto INT NOT NULL REFERENCES productos(id),
+  numero_lote VARCHAR(50) NOT NULL,
+  fecha_fabricacion DATE,
+  fecha_vencimiento DATE NOT NULL,
+  UNIQUE (id_producto, numero_lote),
+  CHECK (fecha_fabricacion IS NULL OR fecha_fabricacion <= fecha_vencimiento)
+);
+
+CREATE TABLE pacientes (
+  id SERIAL PRIMARY KEY,
+  nombre_completo VARCHAR(150) NOT NULL,
+  correo VARCHAR(120),
+  telefono VARCHAR(50),
+  documento_numero VARCHAR(30) UNIQUE,
+  direccion TEXT,
+  id_acudiente INT REFERENCES pacientes(id),
+  id_aseguradora INT REFERENCES aseguradoras(id),
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW(),
+  CHECK (id_acudiente IS NULL OR id_acudiente <> id)
+);
+
+CREATE TABLE empleados (
+  id SERIAL PRIMARY KEY,
+  nombre VARCHAR(120) NOT NULL,
+  correo VARCHAR(120) NOT NULL UNIQUE,
+  hash_contrasena VARCHAR(255) NOT NULL,
+  id_rol INT NOT NULL REFERENCES roles(id),
+  id_sucursal INT NOT NULL REFERENCES sucursales(id),
+  id_tipo_contrato INT NOT NULL REFERENCES tipos_contrato(id),
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Stock por LOTE y SUCURSAL. El CHECK es la última barrera: aunque la
+-- aplicación fallara, la base nunca acepta inventario negativo.
+CREATE TABLE stock_lote (
+  id_lote INT NOT NULL REFERENCES lotes(id),
+  id_sucursal INT NOT NULL REFERENCES sucursales(id),
+  stock INT NOT NULL DEFAULT 0 CHECK (stock >= 0),
+  PRIMARY KEY (id_lote, id_sucursal)
+);
+
+-- ------------------------------------------------------------
+-- Compras
+-- ------------------------------------------------------------
+
+CREATE TABLE compras (
+  id SERIAL PRIMARY KEY,
+  id_proveedor INT NOT NULL REFERENCES proveedores(id),
+  id_sucursal INT NOT NULL REFERENCES sucursales(id),
+  id_empleado INT NOT NULL REFERENCES empleados(id),
+  numero_factura VARCHAR(80),
+  total NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (total >= 0),
+  fecha_compra TIMESTAMP NOT NULL DEFAULT NOW(),
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE detalle_compra (
+  id SERIAL PRIMARY KEY,
+  id_compra INT NOT NULL REFERENCES compras(id),
+  id_lote INT NOT NULL REFERENCES lotes(id),
+  cantidad INT NOT NULL CHECK (cantidad > 0),
+  costo_unitario NUMERIC(12,2) NOT NULL CHECK (costo_unitario >= 0),
   subtotal NUMERIC(12,2) NOT NULL
 );
 
--- ============================================================
--- Pacientes (clientes) — un paciente puede depender de otro
--- (familiar dependiente) vía guardian_id.
--- ============================================================
+-- ------------------------------------------------------------
+-- Ventas, pagos y despachos
+-- ------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS customers (
+CREATE TABLE ventas (
   id SERIAL PRIMARY KEY,
-  full_name VARCHAR(150) NOT NULL,
-  email VARCHAR(120),
-  phone VARCHAR(50),
-  document_number VARCHAR(30),
-  address TEXT,
-  guardian_id INT REFERENCES customers(id),
-  created_at TIMESTAMP DEFAULT NOW()
+  id_paciente INT REFERENCES pacientes(id),
+  id_sucursal INT NOT NULL REFERENCES sucursales(id),
+  id_empleado INT NOT NULL REFERENCES empleados(id), -- quién dispensó (auditoría)
+  id_estado INT NOT NULL REFERENCES estados_venta(id),
+  total NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (total >= 0),
+  fecha_venta TIMESTAMP NOT NULL DEFAULT NOW(),
+  numero_receta VARCHAR(80)
 );
 
--- ============================================================
--- Empleados — roles fijos: Administrador, Farmacéutico, Repartidor
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE detalle_venta (
   id SERIAL PRIMARY KEY,
-  name VARCHAR(120) NOT NULL,
-  email VARCHAR(120) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  role VARCHAR(30) NOT NULL DEFAULT 'Farmacéutico'
-    CHECK (role IN ('Administrador', 'Farmacéutico', 'Repartidor')),
-  is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMP DEFAULT NOW()
-);
-
--- ============================================================
--- Ventas, pagos y despacho/entrega
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS sales (
-  id SERIAL PRIMARY KEY,
-  customer_id INT REFERENCES customers(id),
-  branch_id INT REFERENCES branches(id),
-  total NUMERIC(12,2) NOT NULL DEFAULT 0,
-  sale_date TIMESTAMP DEFAULT NOW(),
-  payment_method VARCHAR(50),
-  prescription_number VARCHAR(80),
-  status VARCHAR(30) DEFAULT 'completed'
-);
-
-CREATE TABLE IF NOT EXISTS sale_items (
-  id SERIAL PRIMARY KEY,
-  sale_id INT REFERENCES sales(id) ON DELETE CASCADE,
-  product_id INT REFERENCES products(id),
-  quantity INT NOT NULL,
-  unit_price NUMERIC(12,2) NOT NULL,
+  id_venta INT NOT NULL REFERENCES ventas(id),
+  id_lote INT NOT NULL REFERENCES lotes(id),
+  cantidad INT NOT NULL CHECK (cantidad > 0),
+  precio_unitario NUMERIC(12,2) NOT NULL CHECK (precio_unitario >= 0),
   subtotal NUMERIC(12,2) NOT NULL
 );
 
--- Requisito "transacciones de pago": el pago es su propia entidad
--- transaccional, con estado, no solo un texto en la venta.
-CREATE TABLE IF NOT EXISTS payments (
+CREATE TABLE pagos (
   id SERIAL PRIMARY KEY,
-  sale_id INT NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-  method VARCHAR(50) NOT NULL,
-  amount NUMERIC(12,2) NOT NULL,
-  status VARCHAR(30) NOT NULL DEFAULT 'aprobado'
-    CHECK (status IN ('pendiente', 'aprobado', 'rechazado', 'reembolsado')),
-  paid_at TIMESTAMP DEFAULT NOW(),
-  created_at TIMESTAMP DEFAULT NOW()
+  id_venta INT NOT NULL REFERENCES ventas(id),
+  id_metodo_pago INT NOT NULL REFERENCES metodos_pago(id),
+  monto NUMERIC(12,2) NOT NULL CHECK (monto >= 0),
+  id_estado INT NOT NULL REFERENCES estados_pago(id),
+  fecha_pago TIMESTAMP,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Requisito "despacho y entrega": estado del despacho, asignable a un
--- empleado con rol Repartidor.
-CREATE TABLE IF NOT EXISTS deliveries (
+CREATE TABLE despachos (
   id SERIAL PRIMARY KEY,
-  sale_id INT NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-  employee_id INT REFERENCES users(id),
-  status VARCHAR(30) NOT NULL DEFAULT 'pendiente'
-    CHECK (status IN ('pendiente', 'en_ruta', 'entregado', 'cancelado')),
-  address TEXT,
-  scheduled_at TIMESTAMP,
-  delivered_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW()
+  id_venta INT NOT NULL UNIQUE REFERENCES ventas(id),
+  id_empleado INT REFERENCES empleados(id), -- repartidor asignado
+  id_estado INT NOT NULL REFERENCES estados_despacho(id),
+  direccion TEXT NOT NULL,
+  fecha_programada TIMESTAMP,
+  fecha_entrega TIMESTAMP,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- ============================================================
--- Requisito "transacción de inventario": ledger de cada movimiento
--- de stock (venta, compra, ajuste manual), separado del número de
--- stock en sí — sin esto, el stock cambia pero no queda "por qué".
--- ============================================================
+-- ------------------------------------------------------------
+-- Ledger de inventario y traslados
+-- ------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS inventory_transactions (
+-- Cada cambio de stock deja una fila aquí (positivo = entrada,
+-- negativo = salida). tipo_referencia/id_referencia apuntan al
+-- documento que lo originó (venta, compra, traslado o ajuste).
+CREATE TABLE movimientos_inventario (
   id SERIAL PRIMARY KEY,
-  product_id INT NOT NULL REFERENCES products(id),
-  branch_id INT NOT NULL REFERENCES branches(id),
-  change_type VARCHAR(20) NOT NULL CHECK (change_type IN ('venta', 'compra', 'ajuste')),
-  quantity INT NOT NULL, -- negativo = salida, positivo = entrada
-  reference_type VARCHAR(20),
-  reference_id INT,
-  note TEXT,
-  created_by INT REFERENCES users(id),
-  created_at TIMESTAMP DEFAULT NOW()
+  id_lote INT NOT NULL REFERENCES lotes(id),
+  id_sucursal INT NOT NULL REFERENCES sucursales(id),
+  id_tipo_movimiento INT NOT NULL REFERENCES tipos_movimiento(id),
+  cantidad INT NOT NULL CHECK (cantidad <> 0),
+  tipo_referencia VARCHAR(20),
+  id_referencia INT,
+  nota TEXT,
+  creado_por INT NOT NULL REFERENCES empleados(id),
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- ============================================================
--- Datos base
--- ============================================================
+CREATE TABLE traslados_inventario (
+  id SERIAL PRIMARY KEY,
+  id_sucursal_origen INT NOT NULL REFERENCES sucursales(id),
+  id_sucursal_destino INT NOT NULL REFERENCES sucursales(id),
+  id_empleado INT NOT NULL REFERENCES empleados(id),           -- quién lo solicita
+  id_empleado_recibe INT REFERENCES empleados(id),             -- quién confirma en destino
+  id_estado INT NOT NULL REFERENCES estados_traslado(id),
+  fecha_traslado TIMESTAMP NOT NULL DEFAULT NOW(),
+  fecha_recepcion TIMESTAMP,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW(),
+  CHECK (id_sucursal_origen <> id_sucursal_destino)
+);
 
-INSERT INTO branches (name, address, is_main)
-SELECT 'Sede Principal', 'Cra 15 #40-20', TRUE
-WHERE NOT EXISTS (SELECT 1 FROM branches);
+CREATE TABLE detalle_traslado (
+  id SERIAL PRIMARY KEY,
+  id_traslado INT NOT NULL REFERENCES traslados_inventario(id),
+  id_lote INT NOT NULL REFERENCES lotes(id),
+  cantidad INT NOT NULL CHECK (cantidad > 0)
+);
 
-INSERT INTO categories (name, description) VALUES
-('Analgesicos', 'Medicamentos para dolor y fiebre'),
-('Antibióticos', 'Productos farmacológicos para infecciones'),
-('Vitaminas', 'Suplementos nutricionales'),
-('Dermatológicos', 'Cuidado de la piel y heridas')
-ON CONFLICT DO NOTHING;
+-- ------------------------------------------------------------
+-- RNF-21: el ledger es inalterable. Ni la aplicación ni un usuario
+-- con acceso directo a la base pueden modificar o borrar movimientos;
+-- las correcciones se hacen con un nuevo movimiento de ajuste.
+-- ------------------------------------------------------------
 
-INSERT INTO products (name, sku, category_id, price, cost, brand, requires_prescription) VALUES
-('Paracetamol 500mg', 'PAR-500', 1, 6200, 4200, 'Genfar', FALSE),
-('Ibuprofeno 400mg', 'IBU-400', 1, 8800, 5600, 'Mundipharma', FALSE),
-('Amoxicilina 500mg', 'AMX-500', 2, 14250, 9800, 'Bayer', TRUE),
-('Vitamina C 1000mg', 'VITC-1000', 3, 9800, 6200, 'Pharmacia', FALSE),
-('Crema Antibacterial', 'CREMA-01', 4, 11500, 7600, 'Farmacol', FALSE)
-ON CONFLICT (sku) DO NOTHING;
+CREATE FUNCTION bloquear_modificacion_ledger() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'movimientos_inventario es inalterable: registre un ajuste en lugar de %', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
 
-INSERT INTO product_stock (product_id, branch_id, stock)
-SELECT p.id, b.id, seed.stock
-FROM (VALUES ('PAR-500', 120), ('IBU-400', 88), ('AMX-500', 64), ('VITC-1000', 75), ('CREMA-01', 42)) AS seed(sku, stock)
-JOIN products p ON p.sku = seed.sku
-CROSS JOIN (SELECT id FROM branches WHERE is_main = TRUE LIMIT 1) b
-ON CONFLICT (product_id, branch_id) DO NOTHING;
+CREATE TRIGGER trg_ledger_inalterable
+  BEFORE UPDATE OR DELETE ON movimientos_inventario
+  FOR EACH ROW EXECUTE FUNCTION bloquear_modificacion_ledger();
 
-INSERT INTO customers (full_name, email, phone, document_number) VALUES
-('María Pérez', 'maria@example.com', '3001234567', '1012345678'),
-('Carlos Rojas', 'carlos@example.com', '3019876543', '1023456789'),
-('Ana Gómez', 'ana@example.com', '3024567890', '1034567890')
-ON CONFLICT DO NOTHING;
+-- ------------------------------------------------------------
+-- Índices para las consultas frecuentes (RNF-05)
+-- ------------------------------------------------------------
 
-INSERT INTO sales (customer_id, branch_id, total, payment_method, status)
-SELECT 1, b.id, 6200, 'Efectivo', 'completed' FROM branches b WHERE b.is_main = TRUE
-UNION ALL
-SELECT 2, b.id, 23050, 'Tarjeta', 'completed' FROM branches b WHERE b.is_main = TRUE
-UNION ALL
-SELECT 3, b.id, 9800, 'Transferencia', 'pending' FROM branches b WHERE b.is_main = TRUE
-ON CONFLICT DO NOTHING;
+CREATE INDEX idx_lotes_producto_venc ON lotes (id_producto, fecha_vencimiento);
+CREATE INDEX idx_stock_lote_sucursal ON stock_lote (id_sucursal);
+CREATE INDEX idx_mov_lote_sucursal_fecha ON movimientos_inventario (id_lote, id_sucursal, fecha_creacion);
+CREATE INDEX idx_mov_fecha ON movimientos_inventario (fecha_creacion);
+CREATE INDEX idx_ventas_paciente ON ventas (id_paciente, fecha_venta);
+CREATE INDEX idx_ventas_fecha ON ventas (fecha_venta);
+CREATE INDEX idx_detalle_venta_venta ON detalle_venta (id_venta);
+CREATE INDEX idx_despachos_empleado ON despachos (id_empleado);
+CREATE INDEX idx_traslados_estado ON traslados_inventario (id_estado);
 
-INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal) VALUES
-(1, 1, 1, 6200, 6200),
-(2, 2, 1, 8800, 8800),
-(2, 3, 1, 14250, 14250),
-(3, 4, 1, 9800, 9800);
+-- ------------------------------------------------------------
+-- Datos de catálogo obligatorios (la aplicación busca los IDs por
+-- nombre, nunca los asume fijos).
+-- ------------------------------------------------------------
 
-INSERT INTO suppliers (name, contact_name, phone, email, address) VALUES
-('Distribuidora Salud', 'Luis Ortega', '3100001111', 'salud@distribuidora.com', 'Cra 12 #34-56'),
-('Farmacia Pro', 'Sofia Diaz', '3111112222', 'sofia@farmaciapro.com', 'Av. 7 #23-12')
-ON CONFLICT DO NOTHING;
-
-INSERT INTO users (name, email, password_hash, role) VALUES
-('Administrador General', 'admin@farmaexpress.com', 'change-me', 'Administrador'),
-('Farmacéutica de Turno', 'farmaceutico@farmaexpress.com', 'change-me', 'Farmacéutico'),
-('Repartidor Zona Norte', 'repartidor@farmaexpress.com', 'change-me', 'Repartidor')
-ON CONFLICT (email) DO NOTHING;
+INSERT INTO roles (nombre_rol) VALUES ('Administrador'), ('Farmacéutico'), ('Repartidor');
+INSERT INTO tipos_contrato (nombre_tipo) VALUES ('Indefinido'), ('Fijo'), ('Prestación de servicios'), ('Aprendizaje');
+INSERT INTO estados_venta (nombre_estado) VALUES ('completada'), ('anulada');
+INSERT INTO estados_pago (nombre_estado) VALUES ('pendiente'), ('aprobado'), ('rechazado'), ('reembolsado');
+INSERT INTO metodos_pago (nombre) VALUES ('Efectivo'), ('Tarjeta'), ('Transferencia');
+INSERT INTO estados_despacho (nombre_estado) VALUES ('pendiente'), ('en_ruta'), ('entregado'), ('cancelado');
+INSERT INTO tipos_movimiento (nombre_tipo) VALUES ('compra'), ('venta'), ('ajuste'), ('traslado_salida'), ('traslado_entrada'), ('anulacion_venta'), ('traslado_reverso');
+INSERT INTO estados_traslado (nombre_estado) VALUES ('pendiente'), ('completado'), ('cancelado');
